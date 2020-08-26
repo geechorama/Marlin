@@ -115,6 +115,10 @@
   #include "feature/joystick.h"
 #endif
 
+#if ENABLED(GEECH_PANEL)
+  #include "feature/geech_panel.h"
+#endif
+
 #if HAS_SERVOS
   #include "module/servo.h"
 #endif
@@ -714,6 +718,8 @@ void idle(TERN_(ADVANCED_PAUSE_FEATURE, bool no_stepper_sleep/*=false*/)) {
   // Handle UI input / draw events
   TERN(DWIN_CREALITY_LCD, DWIN_Update(), ui.update());
 
+  TERN_(GEECH_PANEL, geechPanel.update());
+
   // Run i2c Position Encoders
   #if ENABLED(I2C_POSITION_ENCODERS)
     static millis_t i2cpem_next_update_ms;
@@ -1182,6 +1188,10 @@ void setup() {
 
   #if ENABLED(TFT_LITTLE_VGL_UI)
     SETUP_RUN(tft_lvgl_init());
+  #endif
+
+  #if ENABLED(GEECH_PANEL)
+    SETUP_RUN(geechPanel.init());
   #endif
 
   marlin_state = MF_RUNNING;

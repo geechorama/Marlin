@@ -984,7 +984,7 @@
 
 // Most probes should stay away from the edges of the bed, but
 // with NOZZLE_AS_PROBE this can be negative for a wider probing area.
-#define MIN_PROBE_EDGE 0
+#define PROBING_MARGIN 0
 
 // X and Y axis travel speed (mm/m) between probes
 #define XY_PROBE_SPEED 8000
@@ -2173,6 +2173,16 @@
 //
 //#define REPRAPWORLD_KEYPAD
 //#define REPRAPWORLD_KEYPAD_MOVE_STEP 10.0 // (mm) Distance to move per key-press
+
+//
+// Geech Panel
+//
+#define GEECH_PANEL
+#if ENABLED(GEECH_PANEL)
+  #define STOP_BUTTON_BLINK_RATE_MS   500
+  #define GP_MCP23017_1_ADDRESS       0
+  #define GP_MCP23017_2_ADDRESS       4
+#endif
 
 //=============================================================================
 //=============================== Extra Features ==============================
