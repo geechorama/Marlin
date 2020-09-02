@@ -24,15 +24,17 @@
  * geech_panel.cpp - support for geech's i2c control panel
  */
 
-#include "../inc/MarlinConfigPre.h"
+#include "../inc/MarlinConfig.h"
 
 #if ENABLED(GEECH_PANEL)
 
 #include "geech_panel.h"
 #include "../MarlinCore.h"
+#include "../core/serial.h"
 #include <Adafruit_MCP23017.h>
 
 #include "../lcd/ultralcd.h"
+#include "../lcd/menu/menu.h"
 
 // MCP23017 number 1
 //
@@ -77,7 +79,7 @@ Adafruit_MCP23017 expander1;
 Adafruit_MCP23017 expander2;
 millis_t nextKillButtonToggle = 0;
 bool killButtonState = false;
-bool killButtonToggleEnabled = true;
+bool killButtonToggleEnabled = false;
 uint8_t currentDistanceSetting = 255;
 uint8_t waitingForButtonRelease = 255;
 uint8_t lastGPIOState = 0;
@@ -108,7 +110,7 @@ void updateDistanceSetting(uint8_t newSetting)
     expanderPinWrite(currentDistanceSetting, 0);
   }
   currentDistanceSetting = newSetting;
-  if (currentDistanceSetting != 255)
+  if (currentDistanceSetting != 255 && !printingIsActive())
   {
     expanderPinWrite(currentDistanceSetting, 1);
   }
@@ -220,155 +222,264 @@ uint8_t getLastInterruptPin()
   return MCP23017_INT_ERR;
 }
 
-uint8_t checkForButtonPress()
+uint8_t readExpander1()
 {
+  static uint16_t previousBothPorts = 0;
+
   uint16_t bothPorts = expander1.readGPIOAB();
+  // buttons are active low, so invert what we get from the expander
+  bothPorts = ~bothPorts;
   // mask out the output pins, we don't care about those.
   bothPorts = bothPorts & 0xFD51; // 0b1111110101010001;
 
-  // char bits[17];
-  // for (int i = 0; i < 16; i++)
-  // {
-  //   if ((bothPorts >> i) & 0x0001)
-  //   {
-  //     bits[i] = '1';
-  //   }
-  //   else
-  //   {
-  //     bits[i] = '0';
-  //   }
-  // }
-  // bits[16] = 0;
-  // ui.set_status(bits);
+  if (bothPorts == previousBothPorts)
+  {
+    return 255;
+  }
 
+  previousBothPorts = bothPorts;
+
+  if (bothPorts == 0)
+  {
+    return 255;
+  }
+
+  uint8_t result = 0;
+  //SERIAL_ECHOPGM("expander 1: ");
   for (int i = 0; i < 16; i++)
   {
-    if (((bothPorts >> i) & 0x0001) == 0)
+    if ((bothPorts >> i) & 0x0001)
     {
-      // expanderPinWrite(ONE_TENTH_MM_LED, 1);
-      // safe_delay(15);
-      return i;
+      result = i;
+      //SERIAL_CHAR('1');
+    }
+    else
+    {
+      //SERIAL_CHAR('0');
     }
   }
 
-  expanderPinWrite(ONE_TENTH_MM_LED, 0);
-  return 255;
+  //SERIAL_EOL();
+
+  return result;
 }
 
-void GeechPanel::update()
+uint8_t readExpander2()
 {
-  millis_t ms = millis();
+  static uint16_t previousBothPorts = 0;
 
-  if (ELAPSED(ms, nextKillButtonToggle) && killButtonToggleEnabled)
+  uint16_t bothPorts = expander2.readGPIOAB();
+  bothPorts = ~bothPorts;
+  // mask out the output pins, we don't care about those.
+  bothPorts = bothPorts & 0b001111010111100;
+
+  if (bothPorts == previousBothPorts)
   {
-    nextKillButtonToggle = ms + 500;
-    killButtonState = !killButtonState;
-    expanderPinWrite(STOP_LED, killButtonState);
+    return 255;
   }
 
-  uint8_t buttonPressed = checkForButtonPress();
+  previousBothPorts = bothPorts;
+
+  if (bothPorts == 0)
+  {
+    return 255;
+  }
+
+  uint8_t result = 0;
+  for (int i = 0; i < 16; i++)
+  {
+    if ((bothPorts >> i) & 0x0001)
+    {
+      result = i | EXPANDER_2_FLAG;
+      //SERIAL_CHAR('1');
+    }
+    else
+    {
+      //SERIAL_CHAR('0');
+    }
+  }
+
+  //SERIAL_EOL();
+
+  return result;
+}
+
+uint8_t checkForButtonPress()
+{
+  uint8_t buttonPress = readExpander1();
+  if (buttonPress != 255)
+  {
+    return buttonPress;
+  }
+  return readExpander2();
+}
+
+void handleButtonPress(uint8_t buttonPressed)
+{
   switch (buttonPressed)
   {
   case MENU_ENTER_BUTTON:
-    ui.set_status("menu enter");
+    //SERIAL_ECHOLNPGM("menu enter");
+    ui.lcd_clicked = !wait_for_user;
+    wait_for_user = false;
+    ui.quick_feedback();
     break;
   case MENU_BACK_BUTTON:
-    ui.set_status("menu back");
+    //SERIAL_ECHOLNPGM("menu back");
+    MenuItem_back::action();
+    ui.quick_feedback();
     break;
   case MENU_DOWN_BUTTON:
-    ui.set_status("menu down");
+    //SERIAL_ECHOLNPGM("menu down");
+    encoderDiff = (ENCODER_STEPS_PER_MENU_ITEM) * (ENCODER_PULSES_PER_STEP);
     break;
   case MENU_UP_BUTTON:
-    ui.set_status("menu up");
+    //SERIAL_ECHOLNPGM("menu up");
+    encoderDiff = (ENCODER_STEPS_PER_MENU_ITEM) * (ENCODER_PULSES_PER_STEP) * -1;
     break;
   case PRINT_BUTTON:
-    ui.set_status("print");
+//SERIAL_ECHOLNPGM("print");
+#if ENABLED(SDSUPPORT)
+    if (card.isMounted())
+    {
+      ui.goto_screen(menu_media);
+    }
+    else
+    {
+      ui.set_status("No media");
+      ui.chirp();
+    }
+#else
+#error No SDSUPPORT == No print from SD card
+#endif
     break;
   case PAUSE_RESUME_BUTTON:
-    ui.set_status("pause/resume");
+#if ENABLED(SDSUPPORT)
+    if (printingIsActive())
+    {
+      SERIAL_ECHOLNPGM("pause");
+      ui.pause_print();
+      ui.quick_feedback();
+    }
+    else if (printingIsPaused())
+    {
+      SERIAL_ECHOLNPGM("resume");
+      ui.resume_print();
+      ui.quick_feedback();
+    }
+    else
+    {
+      SERIAL_ECHOLNPGM("nothing doing");
+      ui.set_status("Not printing");
+      ui.chirp();
+    }
+#else
+#error No pause
+#endif
+    break;
+  case X_LEFT_BUTTON:
+    SERIAL_ECHOLNPGM("X Left");
+    break;
+  case X_RIGHT_BUTTON:
+    SERIAL_ECHOLNPGM("X Right");
+    break;
+  case Y_UP_BUTTON:
+    SERIAL_ECHOLNPGM("Y Up");
+    break;
+  case Y_DOWN_BUTTON:
+    SERIAL_ECHOLNPGM("Y Down");
+    break;
+  case XY_HOME_BUTTON:
+    SERIAL_ECHOLNPGM("XY Home");
+    break;
+  case Z_UP_BUTTON:
+    SERIAL_ECHOLNPGM("Z Up");
+    break;
+  case Z_DOWN_BUTTON:
+    SERIAL_ECHOLNPGM("Z Down");
+    break;
+  case Z_HOME_BUTTON:
+    SERIAL_ECHOLNPGM("Z Home");
+    break;
+  case STOP_BUTTON:
+    kill();
+    break;
+  case ONE_TENTH_MM_BUTTON:
+    SERIAL_ECHOLNPGM(".1 MM");
+    updateDistanceSetting(ONE_TENTH_MM_LED);
+    break;
+  case ONE_MM_BUTTON:
+    SERIAL_ECHOLNPGM("1 MM");
+    updateDistanceSetting(ONE_MM_LED);
+    break;
+  case TEN_MM_BUTTON:
+    SERIAL_ECHOLNPGM("10 MM");
+    updateDistanceSetting(TEN_MM_LED);
+    break;
+  case ONE_HUNDRED_MM_BUTTON:
+    SERIAL_ECHOLNPGM("100 MM");
+    updateDistanceSetting(ONE_HUNDRED_MM_LED);
     break;
   default:
     break;
   }
-  // uint8_t newGPIOState = READ(32);
-  // if (newGPIOState != lastGPIOState)
-  // {
-  //   expanderPinWrite(TEN_MM_LED, newGPIOState);
-  //   lastGPIOState = newGPIOState;
-  // }
+}
 
-  // see if a button has been pressed
-  // uint8_t changedPin = expander1.getLastInterruptPin();
-  // if (changedPin != MCP23017_INT_ERR)
-  // {
-  //   expanderPinWrite(ONE_HUNDRED_MM_LED, 1);
-  //   safe_delay(100);
-  //   expanderPinWrite(ONE_HUNDRED_MM_LED, 0);
-  //   safe_delay(100);
-  // }
+void updateButtonLEDs()
+{
+  static millis_t nextButtonLEDUpdate = 0;
+  static bool lastPrintingState = false;
 
-  // changedPin = expander2.getLastInterruptPin();
-  // if (changedPin != MCP23017_INT_ERR)
-  // {
-  //   expanderPinWrite(TEN_MM_LED, 1);
-  //   safe_delay(100);
-  //   expanderPinWrite(TEN_MM_LED, 0);
-  //   safe_delay(100);
-  // }
-  // if (changedPin != MCP23017_INT_ERR)
-  // {
-  //   if (changedPin == X_LEFT_BUTTON)
-  //   {
-  //     expanderPinWrite(ONE_TENTH_MM_LED, 1);
-  //     safe_delay(250);
-  //     expanderPinWrite(ONE_TENTH_MM_LED, 0);
-  //   }
-  //   else if (changedPin == MENU_BACK_BUTTON) {
-  //     expanderPinWrite(ONE_MM_LED, 1);
-  //     safe_delay(250);
-  //     expanderPinWrite(ONE_MM_LED, 0);
-  //   }
-  // }
+  millis_t ms = millis();
 
-  // if (!expander1.digitalRead(X_LEFT_BUTTON))
-  // {
-  //   killButtonToggleEnabled = !killButtonToggleEnabled;
-  //   safe_delay(15);
-  //   while (!expander1.digitalRead(X_LEFT_BUTTON))
-  //   {
-  //     safe_delay(10);
-  //   };
-  // }
+  if (!ELAPSED(ms, nextButtonLEDUpdate))
+  {
+    return;
+  }
+  nextButtonLEDUpdate = ms + 100;
 
-  // switch (changedPin)
-  // {
-  // case X_LEFT_BUTTON:
-  // case ONE_HUNDRED_MM_BUTTON:
-  //   updateDistanceSetting(ONE_HUNDRED_MM_LED);
-  //   break;
-  // case TEN_MM_BUTTON:
-  //   updateDistanceSetting(TEN_MM_LED);
-  //   break;
-  // case ONE_MM_BUTTON:
-  //   updateDistanceSetting(ONE_MM_LED);
-  //   break;
-  // case ONE_TENTH_MM_BUTTON:
-  //   updateDistanceSetting(ONE_TENTH_MM_LED);
-  //   break;
-  // default:
-  //   break;
-  // }
+  bool printingActive = printingIsActive();
+  if (printingActive != lastPrintingState)
+  {
+    lastPrintingState = printingActive;
+    if (printingActive)
+    {
+      updateDistanceSetting(255);
+      killButtonToggleEnabled = true;
+      nextKillButtonToggle = 0;
+      killButtonState = false;
+    }
+    else
+    {
+      killButtonToggleEnabled = false;
+    }
+  }
 
-  // // debounce
-  // safe_delay(15);
+  if (ELAPSED(ms, nextKillButtonToggle))
+  {
+    if (killButtonState && !killButtonToggleEnabled)
+    {
+      killButtonState = false;
+      expanderPinWrite(STOP_LED, false);
+    }
+    else if (killButtonToggleEnabled)
+    {
+      nextKillButtonToggle = ms + 500;
+      killButtonState = !killButtonState;
+      expanderPinWrite(STOP_LED, killButtonState);
+    }
+  }
+}
 
-  // // clear interrupts
-  // // expander1.getLastInterruptPin();
-  // // expander2.getLastInterruptPin();
+void GeechPanel::update()
+{
+  updateButtonLEDs();
 
-  // waitingForButtonRelease = changedPin;
-  //    }
-  //}
+  uint8_t buttonPressed = checkForButtonPress();
+  if (buttonPressed != 255)
+  {
+    handleButtonPress(buttonPressed);
+  }
 }
 
 #endif // GEECH_PANEL
